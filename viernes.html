@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cuadro de Mandos ENUE - Gestión y Control de Producción</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.7"></script>
+    <style type="text/tailwindcss">
+        @theme {
+            --color-enue-bg: #faf9f6; /* Blanco lino/seda natural, limpio */
+            --color-enue-card: #ffffff; /* Blanco puro sólido para tarjetas */
+            --color-enue-border: #e5e5e0; /* Gris piedra natural muy suave */
+            --color-enue-border-subtle: #f2f2ed;
+            --color-enue-text-muted: #6b7280; /* Gris neutro */
+            --color-enue-text-main: #18181b; /* Zinc-900, contraste limpio */
+        }
+        
+        body { 
+            background-color: var(--color-enue-bg); 
+            color: var(--color-enue-text-main); 
+            margin: 0; 
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+        }
+
+        .sober-panel {
+            background-color: var(--color-enue-card);
+            border: 1px solid var(--color-enue-border);
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.03), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
+        }
+
+        /* Scrollbar discreto */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--color-enue-bg);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d4d4d8;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a1a1aa;
+        }
+    </style>
+    <script src="https://unpkg.com/@babel/standalone@7.26.10/babel.min.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.3.1",
+            "react/": "https://esm.sh/react@18.3.1/",
+            "react-dom": "https://esm.sh/react-dom@18.3.1",
+            "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+            "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.474.0?external=react",
+            "recharts": "https://esm.sh/recharts@2.15.3?external=react,react-dom",
+            "papaparse": "https://esm.sh/papaparse@5.4.1"
+        }
+    }
+    </script>
+</head>
+<body class="bg-enue-bg text-zinc-900 min-h-screen selection:bg-zinc-200">
+    <div id="root"></div>
+    <script type="text/babel" data-type="module" data-presets="react">
+        import React, { useState, useEffect, useMemo } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { 
+            Search, ChevronLeft, AlertCircle, Clock, Users, Building, FileText, 
+            Medal, Link as LinkIcon, RefreshCcw, Landmark
+        } from 'lucide-react';
+        import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, LabelList } from 'recharts';
+        import Papa from 'papaparse';
+
+        // ===========================================================================
+        // CONFIGURACIÓN CENTRAL
+        // ===========================================================================
+        const GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRKyPCCYWZdq8vRYqFHhMgsvYaCwuTlxIwaPASkBPPODaTvKfV7k21hW0PtuuaVgVYmVKHgAzBpAnhs/pub?output=csv"; 
+        
+        // VALORES OPERATIVOS FIJADOS
+        const TARIFA_HORA = 21;
+        const PENALIZACION_INCIDENCIA_DIA = 168; // 168€ por día que un operario no impute horas
+
+        const formatEur = (value) => new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(value);
+
+        // ===========================================================================
+        // LISTA OFICIAL DE TRABAJADORES EXCLUYENDO SÓLIDAMENTE A:
+        // - Javier Villalba Pastor (Javi Villalba)
+        // - Jose Carrasco Mateo (Jose Carrasco)
+        // - Alassane Sylla (Alassane Sylla)
+        // ===========================================================================
+        const LISTA_TRABAJADORES = [
+            "URIEL MURILLO MORALES", 
+            "JOSE LUIS ESCOBAR MOGOLLON", 
+            "VIOREL GELU CUMPATA", 
+            "LUIS GUILLERMO RAMIREZ VELASQUEZ", 
+            "LUIS DIDIER GUEVARA MEJIA", 
+            "EMIL BODEA", 
+            "ADRIÁN COSMIN TEODORESCU", 
+            "CARLOS MARTINEZ NAVARRO", 
+            "FRANCISCO ANTONIO MARTINEZ CABALLERO", 
+            "JERONIMO CALDERON LUJAN", 
+            "LUIS CHACE BUELE", 
+            "JOSE ANTONIO CALERO SIRVENT", 
+            "EUSEBIO ROSELL GALLEGO", 
+            "ÁNGEL MARTIN MELIA", 
+            "MIGUEL ANGEL BARREDA SILLAS", 
+            "MARIUS NICOLAE OLARIU", 
+            "MARIAN DRAGHICI", 
+            "GEORGE MICHAEL DIAZ GOMEZ", 
+            "YEFFERSON PAREDES DIAZ", 
+            "LUIS FERNANDO DIAZ ROJAS", 
+            "LAURENTIU CIOBANU",
+            "ALEX CALERO MOYA",
+            "FRANCOAL GOMES",
+            "JUAN CARLOS RIVAS TERAN",
+            "FLAMINIO MONROY ZANABRIA"
+        ];
+
+        const normalizeName = (n) => (n || "")
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .toUpperCase().replace(/\s+/g, ' ').trim();
+
+        const parseFecha = (str) => {
+            if (!str) return null;
+            const s = String(str).trim();
+            let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+            if (m) return new Date(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+            m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+            if (m) return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+            const dt = new Date(s);
+            return isNaN(dt.getTime()) ? null : dt;
+        };
+
+        const dateKey = (dt) => {
+            const y = dt.getFullYear();
+            const m = String(dt.getMonth() + 1).padStart(2, '0');
+            const d = String(dt.getDate()).padStart(2, '0');
+            return `${d}/${m}/${y}`;
+        };
+
+        // ===========================================================================
+        // COMPONENTE LOGO AUTODETECTABLE (ALTA FIDELIDAD)
+        // Conmuta dinámicamente entre URL absoluta (CMS AiKit) y rutas relativas
+        // según el host del entorno, con cascada anti-404 y fallback tipográfico.
+        // ===========================================================================
+        const LOGO_URL_ABSOLUTA = "https://cms.aikit.es/api/tools/threads/69fb150d178316437ac12e86/file/ENUE%20logo.png";
+        const LOGO_URL_ABSOLUTA_ALT = "https://cms.aikit.es/api/tools/threads/69fb150d178316437ac12e86/file/69fb150d178316437ac12e86_enue_logo.png";
+        const LOGO_RUTAS_RELATIVAS = ["enue_logo.png", "./enue_logo.png", "/enue_logo.png"];
+
+        function Logo({ className = "h-10 w-auto object-contain" }) {
+            const fuentes = useMemo(() => {
+                const host = (typeof window !== "undefined" && window.location && window.location.hostname) ? window.location.hostname : "";
+                const esHostAiKit = host === "" || host === "aikit.es" || host.endsWith(".aikit.es");
+                const absolutas = [LOGO_URL_ABSOLUTA, LOGO_URL_ABSOLUTA_ALT];
+                // En hosts AiKit (o iframes sin host propio) prioriza la URL absoluta del CMS;
+                // en cualquier otro dominio prioriza las rutas relativas locales.
+                return esHostAiKit ? [...absolutas, ...LOGO_RUTAS_RELATIVAS] : [...LOGO_RUTAS_RELATIVAS, ...absolutas];
+            }, []);
+            const [indiceFuente, setIndiceFuente] = useState(0);
+            const [agotadas, setAgotadas] = useState(false);
+
+            if (agotadas) {
+                return (
+                    <div className="h-10 px-3 flex items-center justify-center bg-zinc-900 text-white rounded select-none" aria-label="ENUE">
+                        <span className="font-bold text-sm tracking-[0.2em]">ENUE</span>
+                    </div>
+                );
+            }
+
+            return (
+                <img
+                    src={fuentes[indiceFuente]}
+                    alt="ENUE"
+                    className={className}
+                    onError={() => {
+                        if (indiceFuente < fuentes.length - 1) {
+                            setIndiceFuente(indiceFuente + 1);
+                        } else {
+                            setAgotadas(true);
+                        }
+                    }}
+                />
+            );
+        }
+
+        function processData(csvData) {
+            const result = Papa.parse(csvData, { skipEmptyLines: true });
+            const rawRows = result.data;
+            if (rawRows.length === 0) return [];
+
+            let headerRowIdx = -1;
+            let isHeaderDetected = false;
+            let headers = [];
+
+            const fallbackHeaders = [
+                "fecha", "nombre empleado", "desc. proyecto", "horas", 
+                "desc. partida", "observ.", "tipo hora", "total coste"
+            ];
+
+            // Buscar si hay alguna fila que actúe de cabecera
+            for (let i = 0; i < Math.min(5, rawRows.length); i++) {
+                const row = rawRows[i];
+                const rowStr = row.join(" ").toLowerCase();
+                if (rowStr.includes("fecha") && (rowStr.includes("empleado") || rowStr.includes("nombre") || rowStr.includes("proyecto"))) {
+                    headerRowIdx = i;
+                    isHeaderDetected = true;
+                    headers = row.map(h => h.trim().toLowerCase());
+                    break;
+                }
+            }
+
+            let dataRows = [];
+            if (isHeaderDetected) {
+                for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+                    const row = rawRows[i];
+                    const item = {};
+                    headers.forEach((h, idx) => {
+                        if (h) item[h] = row[idx] || "";
+                    });
+                    dataRows.push(item);
+                }
+            } else {
+                for (let i = 0; i < rawRows.length; i++) {
+                    const row = rawRows[i];
+                    if (row.length < 3 || row[0].toLowerCase().includes("partes de trabajo")) continue;
+                    
+                    const item = {};
+                    fallbackHeaders.forEach((fh, idx) => {
+                        item[fh] = row[idx] || "";
+                    });
+                    dataRows.push(item);
+                }
+            }
+
+            return dataRows.filter(r => r["fecha"] && r["nombre empleado"]).map(r => ({
+                ...r,
+                Proyecto: (!r["desc. proyecto"] || r["desc. proyecto"].trim() === '') ? "Obra no especificada" : r["desc. proyecto"].trim(),
+                Horas: parseFloat((r["horas"]||"0").replace(',', '.')) || 0,
+                Fecha: r["fecha"].trim(),
+                Empleado: r["nombre empleado"].trim(),
+                Tarea: r["desc. partida"] || "",
+                Obs: r["observ."] || r["observaciones"] || ""
+            }));
+        }
+
+        function App() {
+            const [data, setData] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            
+            const [searchTerm, setSearchTerm] = useState("");
+            const [selectedProject, setSelectedProject] = useState(null);
+            const [workerFilter, setWorkerFilter] = useState("");
+            const [dateFilter, setDateFilter] = useState("");
+
+            const fetchData = async () => {
+                if (!GOOGLE_SHEETS_CSV_URL) return;
+                
+                setLoading(true);
+                setError(null);
+                try {
+                    const urlAsegurada = GOOGLE_SHEETS_CSV_URL + (GOOGLE_SHEETS_CSV_URL.includes("?") ? "&" : "?") + "t=" + new Date().getTime();
+                    const response = await fetch(urlAsegurada, { redirect: "follow" });
+                    
+                    if (!response.ok) throw new Error("No se pudo obtener una respuesta válida del servidor.");
+                    
+                    const csvText = await response.text();
+                    const parsed = processData(csvText);
+                    setData(parsed);
+                } catch (err) {
+                    setError("Error de Sincronización con Google Sheets. (" + err.message + ")");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                fetchData();
+            }, []);
+
+            // PANTALLA INICIAL SI NO HAY ENLACE CONFIGURADO
+            if (!GOOGLE_SHEETS_CSV_URL) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-6 bg-zinc-50">
+                        <div className="sober-panel p-8 max-w-xl w-full">
+                            <div className="flex items-center gap-4 mb-6 border-b border-zinc-200 pb-6">
+                                <Logo />
+                                <div className="border-l border-zinc-300 pl-4">
+                                    <h1 className="text-lg font-bold tracking-tight text-zinc-900 uppercase">CONTROL DE PRODUCCIÓN</h1>
+                                    <p className="text-xs text-zinc-500 font-medium">Instrucciones de Vinculación</p>
+                                </div>
+                            </div>
+                            
+                            <div className="space-y-4">
+                                <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
+                                    <h2 className="text-zinc-900 text-sm font-semibold mb-2 flex items-center"><LinkIcon className="w-4 h-4 mr-2 text-zinc-500"/> Conexión con Google Sheets</h2>
+                                    <p className="text-xs text-zinc-500 leading-relaxed mb-4">
+                                        Vincule la hoja de cálculo de Google para actualizar este cuadro de mandos de forma autónoma.
+                                    </p>
+                                    <ol className="list-decimal pl-4 text-xs text-zinc-500 space-y-2">
+                                        <li>En Google Sheets, vaya a <strong>Archivo &gt; Compartir &gt; Publicar en la Web</strong>.</li>
+                                        <li>Seleccione <strong>Valores separados por comas (.csv)</strong> en el menú desplegable.</li>
+                                        <li>Copie la URL generada.</li>
+                                        <li>Abra el código fuente HTML, localice la variable <code className="bg-zinc-100 px-1 py-0.5 rounded text-zinc-800 border border-zinc-200">GOOGLE_SHEETS_CSV_URL</code> e inserte la URL dentro de las comillas.</li>
+                                    </ol>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (loading && data.length === 0) return (
+                <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-zinc-500 bg-zinc-50">
+                    <RefreshCcw className="w-5 h-5 animate-spin text-zinc-700" />
+                    <p className="text-xs font-mono tracking-wider uppercase text-zinc-600">Sincronizando con Google Sheets...</p>
+                </div>
+            );
+
+            if (error) return (
+                <div className="min-h-screen flex items-center justify-center p-6 bg-zinc-50">
+                    <div className="sober-panel p-6 max-w-md text-center border-red-200 bg-white shadow-sm">
+                        <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-4" />
+                        <h2 className="text-sm font-mono uppercase tracking-widest text-red-600 mb-2">Error de Enlace</h2>
+                        <p className="text-zinc-500 text-xs leading-relaxed">{error}</p>
+                        <button onClick={fetchData} className="mt-5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white rounded text-xs transition-colors shadow-sm">
+                            Reintentar Sincronización
+                        </button>
+                    </div>
+                </div>
+            );
+
+            if (data.length === 0) return (
+                <div className="min-h-screen flex items-center justify-center p-6 text-zinc-600 text-xs font-mono bg-zinc-50">
+                    La base de datos de origen está vacía o no tiene el formato esperado.
+                </div>
+            );
+
+            // ===========================================================================
+            // PROCESAMIENTO ANALÍTICO Y FINANCIERO
+            // ===========================================================================
+            const totalHoras = data.reduce((a, b) => a + b.Horas, 0);
+            const totalInversionGlobal = totalHoras * TARIFA_HORA;
+            
+            const uniqueProjects = [...new Set(data.map(d => d.Proyecto))];
+            const activeProjectsCount = uniqueProjects.length;
+            const uniqueWorkers = [...new Set(data.map(d => d.Empleado))];
+            const totalWorkers = uniqueWorkers.length;
+            const totalEntries = data.length;
+
+            const projectAgg = {};
+            data.forEach(d => {
+                if (!projectAgg[d.Proyecto]) projectAgg[d.Proyecto] = { name: d.Proyecto, horas: 0, partes: 0, coste: 0 };
+                projectAgg[d.Proyecto].horas += d.Horas;
+                projectAgg[d.Proyecto].partes += 1;
+                projectAgg[d.Proyecto].coste += (d.Horas * TARIFA_HORA);
+            });
+            
+            const sortedProjects = Object.values(projectAgg).sort((a,b) => b.horas - a.horas);
+            
+            // GRADIENTE SÓBRIO MONOCROMÁTICO (De negro intenso a gris medio perfectamente visible)
+            const top10Colors = [
+                '#09090b', // 1º: Negro intenso (Mayor volumen)
+                '#1c1917', // 2º
+                '#2d2b2a', // 3º
+                '#3f3d3c', // 4º
+                '#514f4e', // 5º
+                '#646261', // 6º
+                '#787675', // 7º
+                '#8c8a89', // 8º
+                '#a19f9d', // 9º
+                '#b6b4b2'  // 10º: Gris medio (Menor volumen, perfectamente visible sobre blanco hueso)
+            ];
+            const top10 = sortedProjects.slice(0,10).map((p, idx) => ({ ...p, fill: top10Colors[idx] || top10Colors[top10Colors.length - 1] }));
+            const top4 = sortedProjects.slice(0,4);
+
+            const medals = [
+                { color: "text-amber-800", bg: "bg-amber-100 border-amber-200", label: "1º" },
+                { color: "text-zinc-700", bg: "bg-zinc-100 border-zinc-200", label: "2º" },
+                { color: "text-orange-800", bg: "bg-orange-100/60 border-orange-200", label: "3º" },
+                { color: "text-zinc-500", bg: "bg-zinc-100/50 border-zinc-200/50", label: "4º" }
+            ];
+
+            const filteredProjectsList = sortedProjects.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+
+            // ===========================================================================
+            // DETECCIÓN DE INCIDENCIAS DE REGISTRO DE PARTES
+            // ===========================================================================
+            const fichajesPorTrabajador = {};
+            let minFechaData = null;
+            let maxFechaData = null;
+            
+            data.forEach(d => {
+                const dt = parseFecha(d.Fecha);
+                if (!dt) return;
+                if (!minFechaData || dt < minFechaData) minFechaData = dt;
+                if (!maxFechaData || dt > maxFechaData) maxFechaData = dt;
+                const nKey = normalizeName(d.Empleado);
+                if (!fichajesPorTrabajador[nKey]) fichajesPorTrabajador[nKey] = new Set();
+                fichajesPorTrabajador[nKey].add(dateKey(dt));
+            });
+
+            const diasLaborables = [];
+            if (minFechaData && maxFechaData) {
+                const cursor = new Date(minFechaData);
+                while (cursor <= maxFechaData) {
+                    const dow = cursor.getDay();
+                    if (dow !== 0 && dow !== 6) diasLaborables.push(dateKey(cursor)); // Excluir fines de semana (Sáb/Dom)
+                    cursor.setDate(cursor.getDate() + 1);
+                }
+            }
+
+            const incidencias = [];
+            LISTA_TRABAJADORES.forEach(worker => {
+                const fichados = fichajesPorTrabajador[normalizeName(worker)] || new Set();
+                diasLaborables.forEach(dia => {
+                    if (!fichados.has(dia)) {
+                        incidencias.push({ trabajador: worker, fecha: dia });
+                    }
+                });
+            });
+
+            const resumenFaltas = {};
+            incidencias.forEach(inc => {
+                if (!resumenFaltas[inc.trabajador]) resumenFaltas[inc.trabajador] = [];
+                resumenFaltas[inc.trabajador].push(inc.fecha);
+            });
+            
+            const resumenFaltasList = Object.entries(resumenFaltas)
+                .map(([trabajador, fechas]) => ({ trabajador, fechas }))
+                .sort((a, b) => b.fechas.length - a.fechas.length);
+
+            const trabajadoresConIncidencias = resumenFaltasList.length;
+            const costeTotalIncidencias = incidencias.length * PENALIZACION_INCIDENCIA_DIA;
+
+            const handleProjectClick = (proj) => {
+                setSelectedProject(proj);
+                setWorkerFilter("");
+                setDateFilter("");
+            };
+
+            const detailView = () => {
+                if (!selectedProject) return null;
+                const projData = data.filter(d => d.Proyecto === selectedProject);
+                const projWorkers = [...new Set(projData.map(d => d.Empleado))].sort();
+                const projDates = [...new Set(projData.map(d => d.Fecha))].sort();
+
+                const filteredDetail = projData.filter(d => 
+                    (workerFilter === "" || d.Empleado === workerFilter) &&
+                    (dateFilter === "" || d.Fecha === dateFilter)
+                );
+
+                const hrsDetail = filteredDetail.reduce((a,b) => a + b.Horas, 0);
+                const costeDetail = hrsDetail * TARIFA_HORA;
+
+                return (
+                    <div className="space-y-6 relative z-10 animate-in fade-in duration-200">
+                        <button onClick={() => setSelectedProject(null)} className="flex items-center text-xs text-zinc-500 hover:text-zinc-900 transition-colors uppercase tracking-wider font-medium">
+                            <ChevronLeft className="w-4 h-4 mr-1" /> Volver al Resumen General
+                        </button>
+                        
+                        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-zinc-200 pb-5">
+                            <h2 className="text-xl font-bold flex items-center gap-2">
+                                <Building className="w-5 h-5 text-zinc-500" />
+                                <span className={selectedProject === "Obra no especificada" ? "text-red-600 font-bold" : "text-zinc-900"}>
+                                    {selectedProject}
+                                </span>
+                            </h2>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="sober-panel p-4 bg-white">
+                                <p className="text-xs text-zinc-500 mb-1">Horas Totales Imputadas</p>
+                                <p className="text-2xl font-bold text-zinc-900">{parseFloat(hrsDetail.toFixed(2))} h</p>
+                            </div>
+                            <div className="sober-panel p-4 bg-white">
+                                <p className="text-xs text-zinc-500 mb-1">Coste Incurrido (Mano de Obra)</p>
+                                <p className="text-2xl font-bold text-zinc-900">{formatEur(costeDetail)}</p>
+                            </div>
+                            <div className="sober-panel p-4 bg-white">
+                                <p className="text-xs text-zinc-500 mb-1">Operarios Registrados</p>
+                                <p className="text-2xl font-bold text-zinc-900">{projWorkers.length}</p>
+                            </div>
+                        </div>
+
+                        {/* Filtros Internos */}
+                        <div className="flex flex-col sm:flex-row gap-4 bg-zinc-100 border border-zinc-200 p-4 rounded-xl">
+                            <div className="flex-1">
+                                <label className="block text-[10px] text-zinc-500 mb-1 uppercase font-semibold">Filtrar por Operario</label>
+                                <select value={workerFilter} onChange={(e) => setWorkerFilter(e.target.value)} className="w-full bg-white border border-zinc-200 rounded-lg p-2.5 text-xs text-zinc-800 focus:outline-none focus:border-zinc-400 shadow-sm">
+                                    <option value="">Todos los operarios</option>
+                                    {projWorkers.map(w => <option key={w} value={w}>{w}</option>)}
+                                </select>
+                            </div>
+                            <div className="flex-1">
+                                <label className="block text-[10px] text-zinc-500 mb-1 uppercase font-semibold">Filtrar por Fecha</label>
+                                <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="w-full bg-white border border-zinc-200 rounded-lg p-2.5 text-xs text-zinc-800 focus:outline-none focus:border-zinc-400 shadow-sm">
+                                    <option value="">Todas las fechas</option>
+                                    {projDates.map(f => <option key={f} value={f}>{f}</option>)}
+                                </select>
+                            </div>
+                        </div>
+
+                        {/* Tabla de registros detallados */}
+                        <div className="sober-panel overflow-hidden bg-white">
+                            <div className="p-4 border-b border-zinc-200 bg-zinc-50 flex justify-between items-center">
+                                <h3 className="text-xs font-bold uppercase text-zinc-600 flex items-center gap-2">
+                                    <FileText className="w-4 h-4 text-zinc-500" /> Partes de Trabajo ({filteredDetail.length})
+                                </h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs">
+                                    <thead className="bg-zinc-50 text-zinc-600 border-b border-zinc-200">
+                                        <tr>
+                                            <th className="p-3.5 font-semibold">Fecha</th>
+                                            <th className="p-3.5 font-semibold">Trabajador</th>
+                                            <th className="p-3.5 text-center font-semibold">Horas</th>
+                                            <th className="p-3.5 text-center font-semibold">Importe</th>
+                                            <th className="p-3.5 font-semibold">Partida / Tarea</th>
+                                            <th className="p-3.5 font-semibold">Observaciones de Obra</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-zinc-200/60">
+                                        {filteredDetail.map((d, i) => (
+                                            <tr key={i} className="hover:bg-zinc-50/50 transition-colors">
+                                                <td className="p-3.5 text-zinc-600 whitespace-nowrap">{d.Fecha}</td>
+                                                <td className="p-3.5 font-semibold text-zinc-900">{d.Empleado}</td>
+                                                <td className="p-3.5 text-center font-bold text-slate-800">{d.Horas}</td>
+                                                <td className="p-3.5 text-center text-emerald-600 font-semibold">{formatEur(d.Horas * TARIFA_HORA)}</td>
+                                                <td className="p-3.5 text-zinc-700">{d.Tarea || "-"}</td>
+                                                <td className="p-3.5 text-zinc-500 italic max-w-sm truncate" title={d.Obs}>{d.Obs || "-"}</td>
+                                            </tr>
+                                        ))}
+                                        {filteredDetail.length === 0 && (
+                                            <tr>
+                                                <td colSpan="6" className="p-8 text-center text-zinc-500 italic bg-white">No se han encontrado registros con los filtros seleccionados.</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="max-w-7xl mx-auto p-4 md:p-6 pb-20 relative">
+                    
+                    {/* ENCABEZADO CORPORATIVO SÓBRIO Y PROFESIONAL (FONDO BLANCO HUESO) */}
+                    <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 border-b border-zinc-200 pb-6 relative z-10">
+                        <div className="flex items-center gap-4">
+                            <Logo />
+                            <div className="border-l border-zinc-300 pl-4">
+                                <h1 className="text-base md:text-lg font-bold tracking-tight text-zinc-900 uppercase">CONTROL DE PRODUCCIÓN Y DESVÍOS</h1>
+                                <p className="text-xs text-zinc-500 font-medium">Jefe de Producción · Ángel Gil</p>
+                            </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-3 w-full md:w-auto">
+                            <button 
+                                onClick={fetchData} 
+                                disabled={loading}
+                                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white hover:bg-zinc-50 text-zinc-700 border border-zinc-200 shadow-sm px-4 py-2 rounded-lg text-xs tracking-wider font-semibold transition-colors"
+                                title="Actualizar datos desde Google Sheets"
+                            >
+                                <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                                <span>Actualizar Datos</span>
+                            </button>
+                            <div className="bg-zinc-100 border border-zinc-200 px-3 py-1.5 rounded-full text-xs text-zinc-600 font-semibold flex items-center">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span>
+                                Sincronizado
+                            </div>
+                        </div>
+                    </header>
+
+                    {!selectedProject ? (
+                        <div className="space-y-6 relative z-10">
+                            
+                            {/* PANEL DE KPIs GLOBALES (SOBRIOS Y ELEGANTES) */}
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                                <div className="sober-panel p-4 relative overflow-hidden bg-white">
+                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Volumen Horas</p>
+                                    <p className="text-2xl font-bold text-zinc-900">{parseFloat(totalHoras.toFixed(2))} <span className="text-xs font-normal text-zinc-400 ml-0.5">h</span></p>
+                                    <div className="absolute top-0 right-0 p-3 opacity-[0.06] text-zinc-900"><Clock className="w-10 h-10"/></div>
+                                </div>
+                                <div className="sober-panel p-4 relative overflow-hidden bg-white">
+                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Inversión Estimada</p>
+                                    <p className="text-2xl font-bold text-emerald-700">{formatEur(totalInversionGlobal)}</p>
+                                    <div className="absolute top-0 right-0 p-3 opacity-[0.06] text-emerald-700"><Landmark className="w-10 h-10"/></div>
+                                </div>
+                                <div className="sober-panel p-4 relative overflow-hidden bg-white">
+                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Obras Activas</p>
+                                    <p className="text-2xl font-bold text-zinc-900">{activeProjectsCount}</p>
+                                    <div className="absolute top-0 right-0 p-3 opacity-[0.06] text-zinc-900"><Building className="w-10 h-10"/></div>
+                                </div>
+                                <div className="sober-panel p-4 relative overflow-hidden bg-white">
+                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Plantilla Activa</p>
+                                    <p className="text-2xl font-bold text-zinc-900">{totalWorkers}</p>
+                                    <div className="absolute top-0 right-0 p-3 opacity-[0.06] text-zinc-900"><Users className="w-10 h-10"/></div>
+                                </div>
+                                <div className="sober-panel p-4 relative overflow-hidden bg-white">
+                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Partes Recibidos</p>
+                                    <p className="text-2xl font-bold text-zinc-900">{totalEntries}</p>
+                                    <div className="absolute top-0 right-0 p-3 opacity-[0.06] text-zinc-900"><FileText className="w-10 h-10"/></div>
+                                </div>
+                            </div>
+
+                            {/* GRÁFICOS Y RANKINGS */}
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                {/* Distribución de Horas */}
+                                <div className="lg:col-span-2 sober-panel p-5 bg-white">
+                                    <h3 className="text-xs uppercase tracking-wider mb-6 flex items-center text-zinc-600 font-bold"><FileText className="w-4 h-4 mr-2 text-zinc-400" /> Top 10 Obras (Distribución de Horas)</h3>
+                                    <div className="h-[25rem] w-full">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <BarChart data={top10} layout="vertical" margin={{ top: 5, right: 40, left: 5, bottom: 5 }}>
+                                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(0,0,0,0.04)" />
+                                                <XAxis type="number" stroke="#a1a1aa" tick={{fill: '#71717a', fontSize: 10}} />
+                                                <YAxis dataKey="name" type="category" width={140} tick={{fill: '#18181b', fontSize: 10, fontWeight: 'bold'}} />
+                                                <Tooltip 
+                                                    cursor={{fill: 'rgba(0,0,0,0.02)'}}
+                                                    contentStyle={{backgroundColor: '#ffffff', borderColor: '#e4e4e7', color: '#18181b', borderRadius: '6px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)'}}
+                                                    itemStyle={{color: '#18181b', fontSize: 11}}
+                                                    labelStyle={{color: '#71717a', fontWeight: 'bold', fontSize: 11}}
+                                                    formatter={(value, name, props) => {
+                                                        const pData = props.payload;
+                                                        return [`${value}h (${formatEur(pData.coste)})`, "Total Horas"];
+                                                    }}
+                                                />
+                                                <Bar dataKey="horas" radius={[0, 4, 4, 0]}>
+                                                    {top10.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                                                    ))}
+                                                    <LabelList dataKey="horas" position="right" fill="#18181b" fontSize={10} fontWeight="bold" formatter={(val) => `${parseFloat(val.toFixed(1))}h`} />
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* Cuadrante de Impacto (Ranking Top 4) */}
+                                <div className="sober-panel p-5 bg-white">
+                                    <h3 className="text-xs uppercase tracking-wider mb-6 flex items-center text-zinc-600 font-bold"><Medal className="w-4 h-4 mr-2 text-zinc-400" /> Mayor Imputación (Top 4)</h3>
+                                    <div className="space-y-3.5">
+                                        {top4.map((p, idx) => (
+                                            <div key={p.name} className="flex items-center p-3 rounded-lg bg-zinc-50 border border-zinc-200/60 hover:border-zinc-300 transition-colors shadow-sm">
+                                                <div className={`w-7 h-7 rounded flex-shrink-0 flex items-center justify-center border text-xs font-bold ${medals[idx]?.bg} ${medals[idx]?.color}`}>
+                                                    {medals[idx]?.label}
+                                                </div>
+                                                <div className="ml-3 flex-1 min-w-0">
+                                                    <p className="text-xs font-bold truncate text-zinc-800" title={p.name}>{p.name}</p>
+                                                    <div className="w-full bg-zinc-200 h-1 mt-2 rounded-full overflow-hidden">
+                                                        <div className="bg-slate-700 h-full rounded-full" style={{width: `${Math.min(100, (p.coste/totalInversionGlobal)*100)}%`}}></div>
+                                                    </div>
+                                                </div>
+                                                <div className="ml-4 text-right flex-shrink-0">
+                                                    <p className="text-xs text-zinc-500 font-medium">{parseFloat(p.horas.toFixed(1))}h</p>
+                                                    <p className="text-xs font-bold text-emerald-700 mt-0.5">{formatEur(p.coste)}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* AUDITORÍA OPERATIVA: FALTAS DE REGISTRO (CON DESVIACIÓN ECONÓMICA EN ROJO) */}
+                            <div className="sober-panel overflow-hidden border-zinc-200 bg-white">
+                                <div className="p-4 border-b border-zinc-200 bg-zinc-50 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+                                    <div>
+                                        <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-800 flex items-center gap-2">
+                                            <AlertCircle className="w-4.5 h-4.5 text-zinc-500" />
+                                            Control de Incidencias de Registro
+                                        </h3>
+                                        <p className="text-[10px] text-zinc-500 mt-0.5 font-medium">Auditoría diaria de partes de trabajo según plantilla oficial</p>
+                                    </div>
+                                    
+                                    <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold">
+                                        <span className="px-2.5 py-1 rounded bg-white border border-zinc-200 text-zinc-600">
+                                            Plantilla: {LISTA_TRABAJADORES.length}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Resumen Ejecutivo de Auditoría */}
+                                <div className="grid grid-cols-3 border-b border-zinc-200 bg-white">
+                                    <div className="p-4">
+                                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Plantilla Auditada</p>
+                                        <p className="text-xl font-bold text-zinc-900">{LISTA_TRABAJADORES.length} <span className="text-xs font-normal text-zinc-400">operarios</span></p>
+                                    </div>
+                                    <div className="p-4 border-l border-zinc-200">
+                                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Incidencias de Registro</p>
+                                        <p className={`text-3xl font-bold ${incidencias.length > 0 ? 'text-red-800' : 'text-zinc-900'}`}>{incidencias.length}</p>
+                                    </div>
+                                    <div className="p-4 border-l border-zinc-200">
+                                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold mb-1">Desvío Total de Control</p>
+                                        <p className={`text-3xl font-bold ${costeTotalIncidencias > 0 ? 'text-red-800' : 'text-zinc-900'}`}>{formatEur(costeTotalIncidencias)}</p>
+                                    </div>
+                                </div>
+
+                                {/* Listado de Incidencias en Tabla de Auditoría */}
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left text-xs">
+                                        <thead className="bg-zinc-50 text-zinc-500 border-b border-zinc-200 text-[10px] uppercase tracking-wider">
+                                            <tr>
+                                                <th className="p-3.5 font-semibold">Trabajador</th>
+                                                <th className="p-3.5 font-semibold">Fecha(s) sin registrar</th>
+                                                <th className="p-3.5 font-semibold text-center w-32">Nº Incidencias</th>
+                                                <th className="p-3.5 font-semibold text-right w-36">Desvío Económico</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-200/60 bg-white">
+                                            {resumenFaltasList.map((item) => {
+                                                const totalDesvio = item.fechas.length * PENALIZACION_INCIDENCIA_DIA;
+                                                return (
+                                                    <tr key={item.trabajador} className="hover:bg-zinc-50/50 transition-colors">
+                                                        <td className="p-3.5 font-semibold text-zinc-900">{item.trabajador}</td>
+                                                        <td className="p-3.5 text-red-800 font-semibold">{item.fechas.join(", ")}</td>
+                                                        <td className="p-3.5 text-center font-bold text-lg text-red-800">{item.fechas.length}</td>
+                                                        <td className="p-3.5 text-right font-bold text-lg text-red-800">{formatEur(totalDesvio)}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                            {resumenFaltasList.length === 0 && (
+                                                <tr>
+                                                    <td colSpan="4" className="p-8 text-center text-zinc-400 bg-white">
+                                                        No se han registrado incidencias de registro para esta jornada.
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                <div className="p-4 border-t border-zinc-200 bg-zinc-50 text-[11px] text-zinc-500 flex items-start gap-2">
+                                    <AlertCircle className="w-4 h-4 text-zinc-400 flex-shrink-0 mt-0.5" />
+                                    <span>
+                                        Nota de Auditoría: Se registran <strong className="text-zinc-700">{trabajadoresConIncidencias}</strong> operarios sin parte de trabajo registrado en esta jornada. Cada ausencia de registro diario genera un desvío estimado de 168€ (equivalente a 8 horas de producción no reportadas por operario).
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* DIRECTORIO DE OBRAS ACTIVAS */}
+                            <div className="sober-panel overflow-hidden flex flex-col bg-white">
+                                <div className="p-4 border-b border-zinc-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-zinc-50">
+                                    <div className="flex items-center gap-2">
+                                        <Building className="w-4 h-4 text-zinc-500" />
+                                        <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-700">Directorio de Obras Activas</h3>
+                                    </div>
+                                    <div className="relative w-full sm:w-64">
+                                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                                        <input 
+                                            type="text" 
+                                            placeholder="Buscar obra..." 
+                                            className="w-full bg-white border border-zinc-200 rounded-lg pl-9 pr-4 py-2 text-xs focus:outline-none focus:border-zinc-400 text-zinc-800 placeholder:text-zinc-400 shadow-sm"
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left text-xs">
+                                        <thead className="bg-zinc-50 text-zinc-500 border-b border-zinc-200 text-[10px] uppercase tracking-wider">
+                                            <tr>
+                                                <th className="p-4 font-semibold">Proyecto / Obra</th>
+                                                <th className="p-4 font-semibold text-center w-28">Nº Partes</th>
+                                                <th className="p-4 font-semibold text-center w-32">Horas Imputadas</th>
+                                                <th className="p-4 font-semibold text-center w-36">Inversión (M.O.)</th>
+                                                <th className="p-4 font-semibold text-right w-24">Acción</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-200/60 bg-white">
+                                            {filteredProjectsList.map((p, i) => (
+                                                <tr key={i} className="hover:bg-zinc-50/50 transition-colors">
+                                                    <td className="p-4">
+                                                        <div className="flex items-center">
+                                                            {p.name === "Obra no especificada" ? (
+                                                                <div className="flex items-center gap-1.5 text-red-600 font-bold text-xs tracking-wider">
+                                                                    <AlertCircle className="w-4 h-4" />
+                                                                    <span>REVISIÓN REQUERIDA (NO ESPECIFICADA)</span>
+                                                                </div>
+                                                            ) : (
+                                                                <span className="font-bold text-zinc-800">{p.name}</span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-4 text-center text-zinc-500 font-medium">{p.partes}</td>
+                                                    <td className="p-4 text-center font-semibold text-zinc-900">{parseFloat(p.horas.toFixed(2))} <span className="text-zinc-400 font-normal">h</span></td>
+                                                    <td className="p-4 text-center font-bold text-emerald-700">{formatEur(p.coste)}</td>
+                                                    <td className="p-4 text-right">
+                                                        <button 
+                                                            onClick={() => handleProjectClick(p.name)}
+                                                            className="px-3 py-1.5 bg-white hover:bg-zinc-50 text-zinc-700 border border-zinc-200 shadow-sm rounded text-xs transition-colors"
+                                                        >
+                                                            Auditar
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {filteredProjectsList.length === 0 && (
+                                                <tr>
+                                                    <td colSpan="5" className="p-8 text-center text-zinc-400 bg-white">No se encontraron proyectos activos que coincidan con la búsqueda.</td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        detailView()
+                    )}
+                </div>
+            );
+        }
+
+        createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
